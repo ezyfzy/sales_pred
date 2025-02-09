@@ -7,6 +7,8 @@ import plotly.graph_objects as go
 from model_training import prepare_training_data, train_xgboost_model, predict_test_data
 import yfinance as yf
 from datetime import datetime, timedelta
+from plotly.subplots import make_subplots
+import zipfile
 
 class MLPipeline:
     def __init__(self):
@@ -742,44 +744,108 @@ class StockAnalysisPipeline:
     def _get_trading_signals(self):
         """Generate trading signals based on technical indicators"""
         try:
-            current_price = self.stock_data['Close'].iloc[-1]
-            ma200 = self.stock_data['MA200'].iloc[-1]
-            support = self.stock_data['Support'].iloc[-1]
-            resistance = self.stock_data['Resistance'].iloc[-1]
+            # Get latest values
+            current_price = float(self.stock_data['Close'].iloc[-1])
+            ma200 = float(self.stock_data['MA200'].iloc[-1])
+            ma30 = float(self.stock_data['MA30'].iloc[-1])
+            ma20 = float(self.stock_data['MA20'].iloc[-1])
+            support = float(self.stock_data['Support'].iloc[-1])
+            resistance = float(self.stock_data['Resistance'].iloc[-1])
+            rsi = float(self.stock_data['RSI'].iloc[-1])
+            macd = float(self.stock_data['MACD'].iloc[-1])
+            signal_line = float(self.stock_data['Signal_Line'].iloc[-1])
             
             signals = []
             
             # Trend analysis
             if current_price > ma200:
-                signals.append("Price is above 200-day MA (Bullish)")
+                signals.append("LONG TERM TREND: Bullish (Price > 200 MA)")
             else:
-                signals.append("Price is below 200-day MA (Bearish)")
+                signals.append("LONG TERM TREND: Bearish (Price < 200 MA)")
+            
+            if current_price > ma30:
+                signals.append("MEDIUM TERM TREND: Bullish (Price > 30 MA)")
+            else:
+                signals.append("MEDIUM TERM TREND: Bearish (Price < 30 MA)")
             
             # Support/Resistance analysis
             if current_price < support * 1.02:
-                signals.append("Price near support (Potential buying zone)")
+                signals.append("SUPPORT: Price near support level - Potential buying zone")
             elif current_price > resistance * 0.98:
-                signals.append("Price near resistance (Potential selling zone)")
+                signals.append("RESISTANCE: Price near resistance level - Potential selling zone")
+            
+            # Moving Average Crossovers
+            ma5 = float(self.stock_data['MA5'].iloc[-1])
+            ma5_prev = float(self.stock_data['MA5'].iloc[-2])
+            ma20_prev = float(self.stock_data['MA20'].iloc[-2])
+            
+            if ma5 > ma20 and ma5_prev < ma20_prev:
+                signals.append("CROSSOVER: Golden Cross (5 MA crossed above 20 MA) - Bullish signal")
+            elif ma5 < ma20 and ma5_prev > ma20_prev:
+                signals.append("CROSSOVER: Death Cross (5 MA crossed below 20 MA) - Bearish signal")
+            
+            # RSI Analysis
+            if rsi > 70:
+                signals.append("RSI: Overbought condition (RSI > 70) - Consider taking profits")
+            elif rsi < 30:
+                signals.append("RSI: Oversold condition (RSI < 30) - Consider buying")
+            
+            # MACD Analysis
+            macd_prev = float(self.stock_data['MACD'].iloc[-2])
+            signal_line_prev = float(self.stock_data['Signal_Line'].iloc[-2])
+            
+            if macd > signal_line and macd_prev < signal_line_prev:
+                signals.append("MACD: Bullish crossover - Consider buying")
+            elif macd < signal_line and macd_prev > signal_line_prev:
+                signals.append("MACD: Bearish crossover - Consider selling")
             
             # Volume analysis
-            avg_volume = self.stock_data['Volume'].rolling(window=20).mean().iloc[-1]
-            current_volume = self.stock_data['Volume'].iloc[-1]
+            current_volume = float(self.stock_data['Volume'].iloc[-1])
+            avg_volume = float(self.stock_data['Volume'].rolling(window=20).mean().iloc[-1])
             
             if current_volume > avg_volume * 1.5:
-                signals.append("Higher than average volume (Strong move)")
+                signals.append("VOLUME: Significantly higher than average - Strong price movement")
+            elif current_volume < avg_volume * 0.5:
+                signals.append("VOLUME: Significantly lower than average - Weak price movement")
             
-            return "Trading Signals:\n" + "\n".join(signals)
+            # Bollinger Bands analysis
+            bb_upper = float(self.stock_data['BB_upper'].iloc[-1])
+            bb_lower = float(self.stock_data['BB_lower'].iloc[-1])
+            
+            if current_price > bb_upper:
+                signals.append("BOLLINGER: Price above upper band - Potential overbought")
+            elif current_price < bb_lower:
+                signals.append("BOLLINGER: Price below lower band - Potential oversold")
+            
+            # Get previous values for crossover calculations
+            ma5_prev = float(self.stock_data['MA5'].iloc[-2])
+            ma20_prev = float(self.stock_data['MA20'].iloc[-2])
+            macd_prev = float(self.stock_data['MACD'].iloc[-2])
+            signal_line_prev = float(self.stock_data['Signal_Line'].iloc[-2])
+            
+            # Format the signals
+            signals_text = "\nTechnical Analysis Signals:\n"
+            signals_text += "\nTrend Signals:\n"
+            signals_text += "\n".join([s for s in signals if "TREND" in s])
+            
+            signals_text += "\n\nPrice Level Signals:\n"
+            signals_text += "\n".join([s for s in signals if any(x in s for x in ["SUPPORT", "RESISTANCE", "BOLLINGER"])])
+            
+            signals_text += "\n\nMomentum Signals:\n"
+            signals_text += "\n".join([s for s in signals if any(x in s for x in ["RSI", "MACD", "CROSSOVER"])])
+            
+            signals_text += "\n\nVolume Signals:\n"
+            signals_text += "\n".join([s for s in signals if "VOLUME" in s])
+            
+            return signals_text
             
         except Exception as e:
-            return f"Error generating trading signals: {str(e)}"
+            return f"Error generating trading signals: {str(e)}\nTry selecting a longer date range for better signal generation."
 
     def fetch_and_predict(self, stock_name, start_date, end_date):
         """Fetch data and make predictions"""
         if stock_name not in self.nse_stocks:
-            return "Invalid stock selection!", None, None, None, None, None
-        
-        ticker = self.nse_stocks[stock_name]
-        self.selected_stock = stock_name
+            return "Invalid stock selection!", None, None, None, None, None, None
         
         try:
             # Validate dates
@@ -787,19 +853,63 @@ class StockAnalysisPipeline:
             end_date = pd.to_datetime(end_date)
             
             if start_date >= end_date:
-                return "Start date must be before end date!", None, None, None, None, None
+                return "Start date must be before end date!", None, None, None, None, None, None
+            
+            # Limit the maximum date range to 5 years
+            if (end_date - start_date).days > 1825:  # 5 years
+                return "Please select a date range of 5 years or less!", None, None, None, None, None, None
             
             # Fetch data with additional historical data for feature calculation
-            start_date_with_buffer = (start_date - pd.Timedelta(days=60)).strftime('%Y-%m-%d')
+            start_date_with_buffer = (start_date - pd.Timedelta(days=200)).strftime('%Y-%m-%d')
             end_date_str = end_date.strftime('%Y-%m-%d')
             
+            ticker = self.nse_stocks[stock_name]
+            self.selected_stock = stock_name
             self.stock_data = yf.download(ticker, start=start_date_with_buffer, end=end_date_str)
             
             if self.stock_data.empty:
-                return "No data available for the selected period!", None, None, None, None, None
+                return "No data available for the selected period!", None, None, None, None, None, None
             
-            if len(self.stock_data) < 30:  # Require at least 30 days of data
-                return "Insufficient data for analysis! Please select a longer date range.", None, None, None, None, None
+            # Calculate technical indicators
+            # Moving Averages
+            self.stock_data['MA200'] = self.stock_data['Close'].rolling(window=200, min_periods=1).mean()
+            self.stock_data['MA30'] = self.stock_data['Close'].rolling(window=30, min_periods=1).mean()
+            self.stock_data['MA20'] = self.stock_data['Close'].rolling(window=20, min_periods=1).mean()
+            self.stock_data['MA5'] = self.stock_data['Close'].rolling(window=5, min_periods=1).mean()
+            
+            # Bollinger Bands (20-day)
+            rolling_mean = self.stock_data['Close'].rolling(window=20).mean()
+            rolling_std = self.stock_data['Close'].rolling(window=20).std()
+            self.stock_data['BB_upper'] = rolling_mean + (rolling_std * 2)
+            self.stock_data['BB_middle'] = rolling_mean
+            self.stock_data['BB_lower'] = rolling_mean - (rolling_std * 2)
+            
+            # Support and Resistance levels
+            self.stock_data['Support'] = self.stock_data['Low'].rolling(window=20, min_periods=1).min()
+            self.stock_data['Resistance'] = self.stock_data['High'].rolling(window=20, min_periods=1).max()
+            
+            # Fibonacci Retracement Levels
+            high = self.stock_data['High'].rolling(window=20, min_periods=1).max()
+            low = self.stock_data['Low'].rolling(window=20, min_periods=1).min()
+            diff = high - low
+            self.stock_data['Fib_0.236'] = high - (diff * 0.236)
+            self.stock_data['Fib_0.382'] = high - (diff * 0.382)
+            self.stock_data['Fib_0.5'] = high - (diff * 0.5)
+            self.stock_data['Fib_0.618'] = high - (diff * 0.618)
+            self.stock_data['Fib_0.786'] = high - (diff * 0.786)
+            
+            # RSI
+            delta = self.stock_data['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            self.stock_data['RSI'] = 100 - (100 / (1 + rs))
+            
+            # MACD
+            exp1 = self.stock_data['Close'].ewm(span=12, adjust=False).mean()
+            exp2 = self.stock_data['Close'].ewm(span=26, adjust=False).mean()
+            self.stock_data['MACD'] = exp1 - exp2
+            self.stock_data['Signal_Line'] = self.stock_data['MACD'].ewm(span=9, adjust=False).mean()
             
             # Prepare features and target
             features_df = self.prepare_features(self.stock_data)
@@ -809,26 +919,26 @@ class StockAnalysisPipeline:
             self.stock_data = self.stock_data[self.stock_data.index >= start_date]
             
             if len(features_df) < 2:
-                return "Insufficient data for analysis!", None, None, None, None, None
+                return "Insufficient data for analysis!", None, None, None, None, None, None
             
             # Prepare training data
             X = features_df.iloc[:-1]  # All rows except last
             y = self.stock_data['Close'].iloc[1:]  # All rows except first
             
             if len(X) < 30:  # Additional check for minimum required data
-                return "Insufficient data for analysis! Please select a longer date range.", None, None, None, None, None
+                return "Insufficient data for analysis! Please select a longer date range.", None, None, None, None, None, None
             
             # Train model
             try:
                 self.train_model(X, y)
             except Exception as e:
-                return f"Error training model: {str(e)}", None, None, None, None, None
+                return f"Error training model: {str(e)}", None, None, None, None, None, None
             
             # Make future predictions
             try:
                 future_pred_df = self.predict_future(self.stock_data)
             except Exception as e:
-                return f"Error making predictions: {str(e)}", None, None, None, None, None
+                return f"Error making predictions: {str(e)}", None, None, None, None, None, None
             
             # Create plots
             try:
@@ -836,26 +946,403 @@ class StockAnalysisPipeline:
                 fig_volume = self.create_volume_plot()
                 fig_prediction = self.create_prediction_plot(future_pred_df)
             except Exception as e:
-                return f"Error creating plots: {str(e)}", None, None, None, None, None
+                print(f"Debug - Stock Data Columns: {self.stock_data.columns}")  # Debug print
+                return f"Error creating plots: {str(e)}", None, None, None, None, None, None
             
             # Calculate metrics
             try:
                 metrics = self.calculate_metrics(future_pred_df)
             except Exception as e:
-                return f"Error calculating metrics: {str(e)}", None, None, None, None, None
+                return f"Error calculating metrics: {str(e)}", None, None, None, None, None, None
             
-            # Save predictions
+            # Save all data files
             try:
                 os.makedirs('data', exist_ok=True)
-                predictions_path = f'data/{self.selected_stock.replace(" ", "_")}_predictions.csv'
+                
+                # Save raw data
+                raw_data_path = f'data/{stock_name.replace(" ", "_")}_raw_data.csv'
+                self.stock_data.to_csv(raw_data_path)
+                
+                # Save analyzed data
+                analyzed_data_path = f'data/{stock_name.replace(" ", "_")}_analyzed_data.csv'
+                self.stock_data.to_csv(analyzed_data_path)
+                
+                # Save predictions
+                predictions_path = f'data/{stock_name.replace(" ", "_")}_predictions.csv'
                 future_pred_df.to_csv(predictions_path, index=False)
+                
+                # Create ZIP file immediately after analysis
+                zip_file, status_msg = self.create_and_download_zip(stock_name)
+                
+                return ("Analysis completed successfully!", 
+                        self.create_technical_analysis_plots(future_pred_df),
+                        self.create_volume_analysis(),
+                        self.create_momentum_indicators(),
+                        metrics,
+                        zip_file,    # File path first
+                        status_msg)  # Status message second
+                
             except Exception as e:
-                return f"Error saving predictions: {str(e)}", None, None, None, None, None
-            
-            return "Analysis completed successfully!", fig_price, fig_volume, fig_prediction, metrics, predictions_path
+                print(f"Error saving files: {str(e)}")
+                return f"Error saving files: {str(e)}", None, None, None, None, None, None
             
         except Exception as e:
-            return f"Error during analysis: {str(e)}", None, None, None, None, None
+            print(f"Error in analysis: {str(e)}")
+            return f"Error during analysis: {str(e)}", None, None, None, None, None, None
+
+    def create_technical_analysis_plots(self, future_pred_df):
+        """Create comprehensive technical analysis plots"""
+        # Create subplots
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            subplot_titles=(f'{self.selected_stock} Price Analysis', 'Moving Averages'),
+            row_heights=[0.7, 0.3]
+        )
+        
+        # Main candlestick chart
+        fig.add_trace(
+            go.Candlestick(
+                x=self.stock_data.index,
+                open=self.stock_data['Open'],
+                high=self.stock_data['High'],
+                low=self.stock_data['Low'],
+                close=self.stock_data['Close'],
+                name='Price'
+            ),
+            row=1, col=1
+        )
+        
+        # Add Moving Averages
+        ma_colors = {
+            'MA5': 'rgba(255,255,0,0.7)',
+            'MA20': 'rgba(0,255,0,0.7)',
+            'MA30': 'rgba(255,165,0,0.7)',
+            'MA200': 'rgba(255,0,0,0.7)'
+        }
+        
+        for ma, color in ma_colors.items():
+            fig.add_trace(
+                go.Scatter(
+                    x=self.stock_data.index,
+                    y=self.stock_data[ma],
+                    name=ma,
+                    line=dict(color=color, width=1)
+                ),
+                row=2, col=1
+            )
+        
+        # Add Bollinger Bands
+        fig.add_trace(
+            go.Scatter(
+                x=self.stock_data.index,
+                y=self.stock_data['BB_upper'],
+                name='BB Upper',
+                line=dict(color='gray', dash='dash'),
+                opacity=0.3
+            ),
+            row=1, col=1
+        )
+        
+        fig.add_trace(
+            go.Scatter(
+                x=self.stock_data.index,
+                y=self.stock_data['BB_lower'],
+                name='BB Lower',
+                line=dict(color='gray', dash='dash'),
+                fill='tonexty',
+                opacity=0.3
+            ),
+            row=1, col=1
+        )
+        
+        # Add Support and Resistance
+        fig.add_trace(
+            go.Scatter(
+                x=self.stock_data.index,
+                y=self.stock_data['Support'],
+                name='Support',
+                line=dict(color='green', dash='dot')
+            ),
+            row=1, col=1
+        )
+        
+        fig.add_trace(
+            go.Scatter(
+                x=self.stock_data.index,
+                y=self.stock_data['Resistance'],
+                name='Resistance',
+                line=dict(color='red', dash='dot')
+            ),
+            row=1, col=1
+        )
+        
+        # Add future predictions
+        fig.add_trace(
+            go.Scatter(
+                x=pd.to_datetime(future_pred_df['Date']),
+                y=future_pred_df['Predicted_Close'],
+                name='Prediction',
+                line=dict(color='purple', dash='dash')
+            ),
+            row=1, col=1
+        )
+        
+        # Update layout
+        fig.update_layout(
+            title_text=f"Technical Analysis for {self.selected_stock}",
+            xaxis_rangeslider_visible=False,
+            height=800,
+            showlegend=True,
+            template='plotly_dark'
+        )
+        
+        return fig
+
+    def create_volume_analysis(self):
+        """Create volume analysis chart"""
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            subplot_titles=('Volume Analysis', 'Volume MA Comparison'),
+            row_heights=[0.7, 0.3]
+        )
+        
+        # Calculate volume moving averages
+        self.stock_data['Volume_MA5'] = self.stock_data['Volume'].rolling(window=5).mean()
+        self.stock_data['Volume_MA20'] = self.stock_data['Volume'].rolling(window=20).mean()
+        
+        # Main volume chart
+        colors = ['green' if close > open else 'red' 
+                  for close, open in zip(self.stock_data['Close'], self.stock_data['Open'])]
+        
+        fig.add_trace(
+            go.Bar(
+                x=self.stock_data.index,
+                y=self.stock_data['Volume'],
+                name='Volume',
+                marker_color=colors
+            ),
+            row=1, col=1
+        )
+        
+        # Volume moving averages
+        fig.add_trace(
+            go.Scatter(
+                x=self.stock_data.index,
+                y=self.stock_data['Volume_MA5'],
+                name='Volume MA5',
+                line=dict(color='yellow')
+            ),
+            row=2, col=1
+        )
+        
+        fig.add_trace(
+            go.Scatter(
+                x=self.stock_data.index,
+                y=self.stock_data['Volume_MA20'],
+                name='Volume MA20',
+                line=dict(color='orange')
+            ),
+            row=2, col=1
+        )
+        
+        fig.update_layout(
+            title_text=f"Volume Analysis for {self.selected_stock}",
+            height=600,
+            showlegend=True,
+            template='plotly_dark'
+        )
+        
+        return fig
+
+    def create_momentum_indicators(self):
+        """Create momentum indicators chart"""
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            subplot_titles=('RSI', 'MACD'),
+            row_heights=[0.5, 0.5]
+        )
+        
+        # RSI
+        fig.add_trace(
+            go.Scatter(
+                x=self.stock_data.index,
+                y=self.stock_data['RSI'],
+                name='RSI',
+                line=dict(color='cyan')
+            ),
+            row=1, col=1
+        )
+        
+        # Add RSI levels
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=1, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=1, col=1)
+        
+        # MACD
+        fig.add_trace(
+            go.Scatter(
+                x=self.stock_data.index,
+                y=self.stock_data['MACD'],
+                name='MACD',
+                line=dict(color='blue')
+            ),
+            row=2, col=1
+        )
+        
+        fig.add_trace(
+            go.Scatter(
+                x=self.stock_data.index,
+                y=self.stock_data['Signal_Line'],
+                name='Signal Line',
+                line=dict(color='orange')
+            ),
+            row=2, col=1
+        )
+        
+        fig.update_layout(
+            title_text=f"Momentum Indicators for {self.selected_stock}",
+            height=600,
+            showlegend=True,
+            template='plotly_dark'
+        )
+        
+        return fig
+
+    def create_and_download_zip(self, stock_name):
+        """Create and download a zip file containing all data files"""
+        try:
+            # Create data directory if it doesn't exist
+            os.makedirs('data', exist_ok=True)
+            
+            # Define file paths
+            raw_data_path = f'data/{stock_name.replace(" ", "_")}_raw_data.csv'
+            analyzed_data_path = f'data/{stock_name.replace(" ", "_")}_analyzed_data.csv'
+            predictions_path = f'data/{stock_name.replace(" ", "_")}_predictions.csv'
+            zip_path = f'data/{stock_name.replace(" ", "_")}_all_data.zip'
+            
+            # Check if files exist
+            files_to_zip = []
+            if os.path.exists(raw_data_path):
+                files_to_zip.append(('Raw Data', raw_data_path))
+            if os.path.exists(analyzed_data_path):
+                files_to_zip.append(('Analyzed Data', analyzed_data_path))
+            if os.path.exists(predictions_path):
+                files_to_zip.append(('Predictions', predictions_path))
+            
+            if not files_to_zip:
+                return None, "No data files found. Please run analysis first!"
+            
+            try:
+                # Create ZIP file
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    for file_label, file_path in files_to_zip:
+                        file_name = os.path.basename(file_path)
+                        zipf.write(file_path, file_name)
+            
+                # Return the file path first, then the status message
+                if os.path.exists(zip_path):
+                    return zip_path, f"ZIP file created successfully with {len(files_to_zip)} files!"
+                else:
+                    return None, "Error: ZIP file not created"
+                
+            except Exception as e:
+                print(f"Error creating ZIP file: {str(e)}")
+                return None, f"Error creating ZIP file: {str(e)}"
+                
+        except Exception as e:
+            print(f"Error in create_and_download_zip: {str(e)}")
+            return None, f"Error preparing download: {str(e)}"
+
+    def create_gradio_interface(self):
+        """Create Gradio interface"""
+        with gr.Blocks() as app:
+            gr.Markdown("# Stock Market Analysis and Prediction")
+            
+            # Input components
+            with gr.Row():
+                stock_dropdown = gr.Dropdown(
+                    choices=list(self.nse_stocks.keys()),
+                    label="Select Stock",
+                    value=list(self.nse_stocks.keys())[0]
+                )
+            
+            with gr.Row():
+                start_date = gr.Textbox(
+                    label="Start Date (YYYY-MM-DD)",
+                    value=(datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+                )
+                end_date = gr.Textbox(
+                    label="End Date (YYYY-MM-DD)",
+                    value=datetime.now().strftime('%Y-%m-%d')
+                )
+            
+            # Main action buttons
+            with gr.Row():
+                analyze_btn = gr.Button("Analyze Stock", variant="primary", size="lg")
+            
+            # Analysis section
+            gr.Markdown("## Analysis Results")
+            output_message = gr.Textbox(label="Analysis Status", interactive=False)
+            
+            with gr.Row():
+                price_plot = gr.Plot(label="Price Analysis")
+                volume_plot = gr.Plot(label="Volume Analysis")
+            
+            with gr.Row():
+                momentum_plot = gr.Plot(label="Momentum Indicators")
+            
+            metrics_text = gr.Textbox(label="Analysis Metrics", interactive=False)
+            
+            # Download section
+            gr.Markdown("## Download Data")
+            with gr.Row():
+                download_zip_btn = gr.Button("Download All Data as ZIP", variant="secondary")
+            
+            # Separate components for status and file
+            download_status = gr.Textbox(label="Download Status", interactive=False)
+            download_file = gr.File(label="Download ZIP File", interactive=True)
+            
+            # Button click events
+            analyze_btn.click(
+                fn=self.fetch_and_predict,
+                inputs=[stock_dropdown, start_date, end_date],
+                outputs=[output_message, price_plot, volume_plot, momentum_plot, 
+                        metrics_text, download_status, download_file]
+            )
+            
+            download_zip_btn.click(
+                fn=self.create_and_download_zip,
+                inputs=[stock_dropdown],
+                outputs=[download_status, download_file]
+            )
+            
+            return app
+
+    def format_files_for_display(self, files_list):
+        """Format files list for display in dataframe"""
+        if not files_list:
+            return []
+        
+        display_data = []
+        for file in files_list:
+            display_data.append([
+                file['name'],
+                file['size'],
+                file['last_modified'],
+                f"📥 [Download]({file['path']})"
+            ])
+        
+        return display_data
+
+    def run_app(self):
+        """Run the Gradio app"""
+        app = self.create_gradio_interface()
+        app.launch(share=True)
 
 # Create Gradio interface
 with gr.Blocks(title="Stock Market Analysis") as app:
