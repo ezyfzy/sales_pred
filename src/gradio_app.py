@@ -9,6 +9,7 @@ import yfinance as yf
 from datetime import datetime, timedelta
 from plotly.subplots import make_subplots
 import zipfile
+from sklearn.ensemble import RandomForestRegressor
 
 class MLPipeline:
     def __init__(self):
@@ -168,217 +169,173 @@ class MLPipeline:
 
 class StockAnalysisPipeline:
     def __init__(self):
-        # Dictionary of Indian stock symbols with their correct Yahoo Finance tickers
+        """Initialize the stock analysis pipeline"""
         self.nse_stocks = {
-            'Reliance Industries': 'RELIANCE.NS',  # Fixed from 'RELIANCE'
+            'Reliance Industries': 'RELIANCE.NS',
             'TCS': 'TCS.NS',
             'HDFC Bank': 'HDFCBANK.NS',
             'Infosys': 'INFY.NS',
-            'ICICI Bank': 'ICICIBANK.NS',
-            'HUL': 'HINDUNILVR.NS',
-            'ITC': 'ITC.NS',
-            'SBI': 'SBIN.NS',
-            'Bharti Airtel': 'BHARTIARTL.NS',
-            'Axis Bank': 'AXISBANK.NS',
-            # Adding more major NSE stocks
-            'L&T': 'LT.NS',
-            'Bajaj Finance': 'BAJFINANCE.NS',
-            'Asian Paints': 'ASIANPAINT.NS',
-            'HCL Tech': 'HCLTECH.NS',
-            'Maruti Suzuki': 'MARUTI.NS',
-            'Kotak Bank': 'KOTAKBANK.NS',
-            'Wipro': 'WIPRO.NS',
-            'Sun Pharma': 'SUNPHARMA.NS',
-            'Power Grid': 'POWERGRID.NS',
-            'NTPC': 'NTPC.NS'
+            'ICICI Bank': 'ICICIBANK.NS'
         }
+        self.model = RandomForestRegressor(n_estimators=100, random_state=42)
         self.stock_data = None
         self.selected_stock = None
-        self.model = None
-        self.scaler = None
 
-    def prepare_features(self, df):
-        """Prepare features for prediction"""
-        df = df.copy()
-        
+    def prepare_technical_indicators(self, data):
+        """Calculate all technical indicators"""
         try:
-            # Replace infinite values with NaN
-            df = df.replace([np.inf, -np.inf], np.nan)
+            df = data.copy()
             
-            # Technical indicators with error handling
-            try:
-                # Moving averages
-                df['MA5'] = df['Close'].rolling(window=5, min_periods=1).mean()
-                df['MA20'] = df['Close'].rolling(window=20, min_periods=1).mean()
-                df['MA200'] = df['Close'].rolling(window=200, min_periods=1).mean()  # Added 200-day MA
-                
-                # Support and Resistance levels (using rolling min/max)
-                df['Support'] = df['Low'].rolling(window=20, min_periods=1).min()
-                df['Resistance'] = df['High'].rolling(window=20, min_periods=1).max()
-                
-                # Fibonacci Retracement Levels
-                high = df['High'].rolling(window=20, min_periods=1).max()
-                low = df['Low'].rolling(window=20, min_periods=1).min()
-                diff = high - low
-                df['Fib_0.236'] = high - (diff * 0.236)
-                df['Fib_0.382'] = high - (diff * 0.382)
-                df['Fib_0.5'] = high - (diff * 0.5)
-                df['Fib_0.618'] = high - (diff * 0.618)
-                df['Fib_0.786'] = high - (diff * 0.786)
-                
-                # RSI
-                delta = df['Close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=14, min_periods=1).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=1).mean()
-                rs = gain / (loss + 1e-9)  # Add small constant to prevent division by zero
-                df['RSI'] = 100 - (100 / (1 + rs))
-                df['RSI'] = df['RSI'].clip(0, 100)  # Clip RSI between 0 and 100
-                
-                # MACD
-                exp1 = df['Close'].ewm(span=12, adjust=False, min_periods=1).mean()
-                exp2 = df['Close'].ewm(span=26, adjust=False, min_periods=1).mean()
-                df['MACD'] = exp1 - exp2
-                
-                # Bollinger Bands
-                df['20dSTD'] = df['Close'].rolling(window=20, min_periods=1).std()
-                df['Upper_Band'] = df['MA20'] + (df['20dSTD'] * 2)
-                df['Lower_Band'] = df['MA20'] - (df['20dSTD'] * 2)
-                
-                # Price changes (as percentages, clipped to prevent extreme values)
-                df['Price_Change'] = df['Close'].pct_change().fillna(0).clip(-1, 1)
-                df['Price_Change_5d'] = df['Close'].pct_change(periods=5).fillna(0).clip(-1, 1)
-                
-                # Volume features (normalized)
-                mean_volume = df['Volume'].mean()
-                std_volume = df['Volume'].std()
-                df['Volume_Normalized'] = ((df['Volume'] - mean_volume) / (std_volume + 1e-9)).clip(-5, 5)
-                df['Volume_Change'] = df['Volume'].pct_change().fillna(0).clip(-1, 1)
-                df['Volume_MA5'] = df['Volume'].rolling(window=5, min_periods=1).mean()
-                
-            except Exception as e:
-                print(f"Error calculating technical indicators: {str(e)}")
-                raise
+            # Calculate Moving Averages
+            df['MA5'] = df['Close'].rolling(window=5, min_periods=1).mean()
+            df['MA20'] = df['Close'].rolling(window=20, min_periods=1).mean()
+            df['MA50'] = df['Close'].rolling(window=50, min_periods=1).mean()
+            df['MA200'] = df['Close'].rolling(window=200, min_periods=1).mean()
             
-            # Fill NaN values with appropriate methods
-            df = df.fillna(method='ffill').fillna(method='bfill').fillna(0)
+            # Calculate Bollinger Bands
+            rolling_mean = df['Close'].rolling(window=20, min_periods=1).mean()
+            rolling_std = df['Close'].rolling(window=20, min_periods=1).std()
             
-            # Select features for prediction
-            feature_columns = [
-                'Open', 'High', 'Low', 'Close', 'Volume_Normalized',
-                'MA5', 'MA20', 'RSI', 'MACD',
-                'Upper_Band', 'Lower_Band',
-                'Price_Change', 'Price_Change_5d',
-                'Volume_Change', 'Volume_MA5'
-            ]
+            df['BB_middle'] = rolling_mean
+            df['BB_upper'] = rolling_mean + (rolling_std * 2)
+            df['BB_lower'] = rolling_mean - (rolling_std * 2)
             
-            # Normalize price-based features by dividing by the current price
-            price_based_features = ['Open', 'High', 'Low', 'Close', 'MA5', 'MA20', 'Upper_Band', 'Lower_Band']
-            for feature in price_based_features:
-                df[feature] = df[feature] / df['Close'].mean()
+            # Calculate Support and Resistance
+            period = 20  # Look back period for support/resistance
+            df['Support'] = df['Close'].rolling(window=period, min_periods=1).min()
+            df['Resistance'] = df['Close'].rolling(window=period, min_periods=1).max()
             
-            # Final check for infinite values
-            result = df[feature_columns].replace([np.inf, -np.inf], np.nan).fillna(0)
+            # Calculate RSI
+            delta = df['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14, min_periods=1).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=1).mean()
+            rs = gain / (loss + 1e-9)  # Add small constant to avoid division by zero
+            df['RSI'] = 100 - (100 / (1 + rs))
+            df['RSI'] = df['RSI'].clip(0, 100)  # Clip RSI between 0 and 100
             
-            # Clip extreme values
-            result = result.clip(-1e6, 1e6)
+            # Calculate MACD
+            exp1 = df['Close'].ewm(span=12, adjust=False, min_periods=1).mean()
+            exp2 = df['Close'].ewm(span=26, adjust=False, min_periods=1).mean()
+            df['MACD'] = exp1 - exp2
+            df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False, min_periods=1).mean()
             
-            return result
-        
+            # Calculate Fibonacci Retracement Levels
+            max_price = df['High'].rolling(window=period, min_periods=1).max()
+            min_price = df['Low'].rolling(window=period, min_periods=1).min()
+            diff = max_price - min_price
+            
+            df['Fib_0.236'] = max_price - (diff * 0.236)
+            df['Fib_0.382'] = max_price - (diff * 0.382)
+            df['Fib_0.5'] = max_price - (diff * 0.5)
+            df['Fib_0.618'] = max_price - (diff * 0.618)
+            df['Fib_0.786'] = max_price - (diff * 0.786)
+            
+            # Fill NaN values
+            df = df.fillna(method='bfill').fillna(method='ffill').fillna(0)
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error in prepare_technical_indicators: {str(e)}")
+            raise
+
+    def prepare_features(self, data):
+        """Prepare features for model training"""
+        try:
+            # Create basic features
+            features = pd.DataFrame()
+            features['Close'] = data['Close']
+            features['Volume'] = data['Volume']
+            features['MA5'] = data['MA5']
+            features['MA20'] = data['MA20']
+            features['RSI'] = data['RSI']
+            features['MACD'] = data['MACD']
+            
+            # Fill NaN values
+            features = features.fillna(method='bfill').fillna(method='ffill').fillna(0)
+            
+            return features
+            
         except Exception as e:
             print(f"Error in prepare_features: {str(e)}")
+            print(f"Available columns: {data.columns.tolist()}")
             raise
 
     def train_model(self, X, y):
-        """Train XGBoost model for prediction"""
+        """Train the prediction model"""
         try:
-            from sklearn.preprocessing import RobustScaler
-            from sklearn.model_selection import train_test_split
-            import xgboost as xgb
-            
-            # Use RobustScaler instead of StandardScaler to handle outliers better
-            self.scaler = RobustScaler()
-            X_scaled = self.scaler.fit_transform(X)
-            
-            # Check for any remaining infinite values
-            if not np.all(np.isfinite(X_scaled)):
-                raise ValueError("Infinite values found after scaling")
-            
-            # Split data
-            X_train, X_test, y_train, y_test = train_test_split(
-                X_scaled, y, test_size=0.2, random_state=42
-            )
-            
-            # Train model with more robust parameters
-            self.model = xgb.XGBRegressor(
-                objective='reg:squarederror',
-                n_estimators=100,
-                learning_rate=0.1,
-                max_depth=5,
-                min_child_weight=5,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                reg_alpha=0.1,
-                reg_lambda=1,
-                random_state=42,
-                early_stopping_rounds=10
-            )
-            
-            # Add error handling for training
-            try:
-                self.model.fit(
-                    X_train, 
-                    y_train,
-                    eval_set=[(X_test, y_test)],
-                    verbose=False
-                )
-            except Exception as e:
-                print(f"Error during model training: {str(e)}")
-                raise
+            if len(X) != len(y):
+                raise ValueError("Feature and target arrays must have the same length")
+                
+            # Initialize model if not already done
+            if self.model is None:
+                self.model = RandomForestRegressor(n_estimators=100, random_state=42)
+                
+            # Train the model
+            self.model.fit(X, y)
             
         except Exception as e:
-            print(f"Error in train_model: {str(e)}")
+            print(f"Error training model: {str(e)}")
             raise
 
-    def predict_future(self, last_data, days=30):
-        """Predict future prices"""
-        future_predictions = []
-        current_data = last_data.copy()
-        
-        for _ in range(days):
-            # Prepare features for prediction
-            features = self.prepare_features(current_data)
-            last_features = features.iloc[-1:]
+    def predict_future(self, data, days=30):
+        """Make future predictions"""
+        try:
+            # Create training features and target
+            X = pd.DataFrame()
+            X['Close'] = data['Close']
+            X['Volume'] = data['Volume']
+            X['MA5'] = data['MA5']
+            X['MA20'] = data['MA20']
+            X['RSI'] = data['RSI']
+            X['MACD'] = data['MACD']
             
-            # Scale features
-            scaled_features = self.scaler.transform(last_features)
+            # Prepare target (next day's price)
+            y = data['Close'].shift(-1).dropna()
+            X = X.iloc[:-1]  # Remove last row to match target length
             
-            # Make prediction
-            prediction = self.model.predict(scaled_features)[0]
+            # Train model
+            self.model.fit(X, y)
             
-            # Create new row with predicted close price
-            new_row = current_data.iloc[-1:].copy()
-            new_row.index = [new_row.index[-1] + pd.Timedelta(days=1)]
-            new_row['Close'] = prediction
-            new_row['Open'] = prediction
-            new_row['High'] = prediction
-            new_row['Low'] = prediction
-            new_row['Volume'] = current_data['Volume'].mean()
+            # Prepare predictions
+            predictions = []
+            dates = []
+            last_data = X.iloc[-1].copy()
+            current_date = data.index[-1]
             
-            # Append prediction
-            future_predictions.append({
-                'Date': new_row.index[0],
-                'Predicted_Close': prediction
+            # Make predictions
+            for _ in range(days):
+                current_date = current_date + pd.Timedelta(days=1)
+                dates.append(current_date)
+                
+                # Make single prediction
+                pred = self.model.predict(last_data.values.reshape(1, -1))[0]
+                predictions.append(pred)
+                
+                # Update last_data for next prediction
+                last_data['Close'] = pred
+                last_data['MA5'] = (last_data['MA5'] * 4 + pred) / 5
+                last_data['MA20'] = (last_data['MA20'] * 19 + pred) / 20
+                # Keep other features relatively stable
+                
+            # Create prediction DataFrame
+            future_df = pd.DataFrame({
+                'Date': dates,
+                'Predicted_Close': predictions
             })
             
-            # Update current data for next prediction
-            current_data = pd.concat([current_data, new_row])
-        
-        return pd.DataFrame(future_predictions)
+            return future_df
+            
+        except Exception as e:
+            print(f"Error in predict_future: {str(e)}")
+            print(f"Data shape: {data.shape}")
+            print(f"Available columns: {data.columns.tolist()}")
+            raise
 
     def fetch_stock_data(self, stock_name, start_date, end_date):
-        """Fetch stock data from Yahoo Finance"""
+        """Fetch stock data and calculate indicators"""
         if stock_name not in self.nse_stocks:
-            return "Invalid stock selection!", None, None, None, None
+            return "Invalid stock selection!", None
         
         ticker = self.nse_stocks[stock_name]
         self.selected_stock = stock_name
@@ -388,130 +345,20 @@ class StockAnalysisPipeline:
             self.stock_data = yf.download(ticker, start=start_date, end=end_date)
             
             if self.stock_data.empty:
-                return "No data available for the selected period!", None, None, None, None
+                return "No data available for the selected period!", None
             
             # Calculate technical indicators
-            # Moving averages
-            self.stock_data['MA200'] = self.stock_data['Close'].rolling(window=200, min_periods=1).mean()
-            self.stock_data['MA20'] = self.stock_data['Close'].rolling(window=20, min_periods=1).mean()
+            self.stock_data = self.prepare_technical_indicators(self.stock_data)
             
-            # Support and Resistance levels
-            self.stock_data['Support'] = self.stock_data['Low'].rolling(window=20, min_periods=1).min()
-            self.stock_data['Resistance'] = self.stock_data['High'].rolling(window=20, min_periods=1).max()
+            # Verify data
+            if self.stock_data is None:
+                return "Error calculating technical indicators!", None
             
-            # Fibonacci Retracement Levels
-            high = self.stock_data['High'].rolling(window=20, min_periods=1).max()
-            low = self.stock_data['Low'].rolling(window=20, min_periods=1).min()
-            diff = high - low
-            self.stock_data['Fib_0.236'] = high - (diff * 0.236)
-            self.stock_data['Fib_0.382'] = high - (diff * 0.382)
-            self.stock_data['Fib_0.5'] = high - (diff * 0.5)
-            self.stock_data['Fib_0.618'] = high - (diff * 0.618)
-            self.stock_data['Fib_0.786'] = high - (diff * 0.786)
-            
-            # Create price chart
-            fig_price = go.Figure()
-            fig_price.add_trace(go.Candlestick(
-                x=self.stock_data.index,
-                open=self.stock_data['Open'],
-                high=self.stock_data['High'],
-                low=self.stock_data['Low'],
-                close=self.stock_data['Close'],
-                name='Price'
-            ))
-            
-            # Add 200-day MA
-            fig_price.add_trace(go.Scatter(
-                x=self.stock_data.index,
-                y=self.stock_data['MA200'],
-                mode='lines',
-                name='200-day MA',
-                line=dict(color='blue', width=1)
-            ))
-            
-            # Add Support and Resistance
-            fig_price.add_trace(go.Scatter(
-                x=self.stock_data.index,
-                y=self.stock_data['Support'],
-                mode='lines',
-                name='Support',
-                line=dict(color='green', width=1, dash='dash')
-            ))
-            
-            fig_price.add_trace(go.Scatter(
-                x=self.stock_data.index,
-                y=self.stock_data['Resistance'],
-                mode='lines',
-                name='Resistance',
-                line=dict(color='red', width=1, dash='dash')
-            ))
-            
-            # Add Fibonacci levels
-            colors = ['rgba(255,0,0,0.3)', 'rgba(255,165,0,0.3)', 'rgba(255,255,0,0.3)', 
-                      'rgba(0,255,0,0.3)', 'rgba(0,0,255,0.3)']
-            levels = ['Fib_0.236', 'Fib_0.382', 'Fib_0.5', 'Fib_0.618', 'Fib_0.786']
-            
-            for level, color in zip(levels, colors):
-                fig_price.add_trace(go.Scatter(
-                    x=self.stock_data.index,
-                    y=self.stock_data[level],
-                    mode='lines',
-                    name=f'Fib {level.split("_")[1]}',
-                    line=dict(color=color, width=1)
-                ))
-            
-            fig_price.update_layout(
-                title=f'{stock_name} Price Chart with Technical Indicators',
-                yaxis_title='Price (₹)',
-                xaxis_title='Date',
-                template='plotly_white',
-                hovermode='x unified',
-                showlegend=True
-            )
-            
-            # Create volume chart
-            fig_volume = px.bar(
-                self.stock_data,
-                x=self.stock_data.index,
-                y='Volume',
-                title=f'{stock_name} Volume'
-            )
-            
-            # Calculate daily returns
-            self.stock_data['Returns'] = self.stock_data['Close'].pct_change()
-            fig_returns = px.histogram(
-                self.stock_data,
-                x='Returns',
-                title='Distribution of Daily Returns'
-            )
-            
-            # Calculate metrics
-            current_price = float(self.stock_data['Close'].iloc[-1])
-            ma200 = float(self.stock_data['MA200'].iloc[-1])
-            support = float(self.stock_data['Support'].iloc[-1])
-            resistance = float(self.stock_data['Resistance'].iloc[-1])
-            
-            metrics = f"""
-            Analysis for {stock_name}:
-            
-            Current Price: ₹{current_price:.2f}
-            200-day MA: ₹{ma200:.2f}
-            Trend: {"Bullish" if current_price > ma200 else "Bearish"}
-            
-            Technical Levels:
-            Support: ₹{support:.2f}
-            Resistance: ₹{resistance:.2f}
-            
-            Distance from Levels:
-            200-day MA: {((current_price - ma200) / ma200 * 100):.2f}%
-            Support: {((current_price - support) / support * 100):.2f}%
-            Resistance: {((current_price - resistance) / resistance * 100):.2f}%
-            """
-            
-            return "Data fetched successfully!", fig_price, fig_volume, fig_returns, metrics
+            return "Data fetched and processed successfully!", self.stock_data
             
         except Exception as e:
-            return f"Error fetching data: {str(e)}", None, None, None, None
+            print(f"Error fetching data: {str(e)}")
+            return f"Error fetching data: {str(e)}", None
 
     def download_data(self):
         """Download the stock data as CSV"""
@@ -696,15 +543,9 @@ class StockAnalysisPipeline:
             ma200 = float(self.stock_data['MA200'].iloc[-1])
             support = float(self.stock_data['Support'].iloc[-1])
             resistance = float(self.stock_data['Resistance'].iloc[-1])
-            
-            # Get Fibonacci levels
-            fib_levels = {
-                '23.6%': float(self.stock_data['Fib_0.236'].iloc[-1]),
-                '38.2%': float(self.stock_data['Fib_0.382'].iloc[-1]),
-                '50.0%': float(self.stock_data['Fib_0.5'].iloc[-1]),
-                '61.8%': float(self.stock_data['Fib_0.618'].iloc[-1]),
-                '78.6%': float(self.stock_data['Fib_0.786'].iloc[-1])
-            }
+            rsi = float(self.stock_data['RSI'].iloc[-1])
+            macd = float(self.stock_data['MACD'].iloc[-1])
+            signal = float(self.stock_data['Signal_Line'].iloc[-1])
             
             # Get trend status
             trend = "Bullish" if current_price > ma200 else "Bearish"
@@ -714,294 +555,135 @@ class StockAnalysisPipeline:
             Analysis for {self.selected_stock}:
             
             Current Price: ₹{current_price:.2f}
-            200-day MA: ₹{ma200:.2f}
-            Trend: {trend}
             
             Technical Levels:
             Support: ₹{support:.2f}
             Resistance: ₹{resistance:.2f}
+            200-day MA: ₹{ma200:.2f}
             
-            Fibonacci Retracement Levels:
-            23.6%: ₹{fib_levels['23.6%']:.2f}
-            38.2%: ₹{fib_levels['38.2%']:.2f}
-            50.0%: ₹{fib_levels['50.0%']:.2f}
-            61.8%: ₹{fib_levels['61.8%']:.2f}
-            78.6%: ₹{fib_levels['78.6%']:.2f}
+            Indicators:
+            Trend: {trend}
+            RSI: {rsi:.2f}
+            MACD: {macd:.2f}
+            Signal Line: {signal:.2f}
             
             Price Position:
             Distance from 200-day MA: {((current_price - ma200) / ma200 * 100):.2f}%
             Distance from Support: {((current_price - support) / support * 100):.2f}%
             Distance from Resistance: {((current_price - resistance) / resistance * 100):.2f}%
             
+            Trading Signals:
             {self._get_trading_signals()}
             """
             
             return metrics
             
         except Exception as e:
+            print(f"Error calculating metrics: {str(e)}")
             return f"Error calculating metrics: {str(e)}"
 
     def _get_trading_signals(self):
         """Generate trading signals based on technical indicators"""
         try:
-            # Get latest values
+            signals = []
+            
             current_price = float(self.stock_data['Close'].iloc[-1])
             ma200 = float(self.stock_data['MA200'].iloc[-1])
-            ma30 = float(self.stock_data['MA30'].iloc[-1])
-            ma20 = float(self.stock_data['MA20'].iloc[-1])
             support = float(self.stock_data['Support'].iloc[-1])
             resistance = float(self.stock_data['Resistance'].iloc[-1])
             rsi = float(self.stock_data['RSI'].iloc[-1])
             macd = float(self.stock_data['MACD'].iloc[-1])
             signal_line = float(self.stock_data['Signal_Line'].iloc[-1])
             
-            signals = []
-            
-            # Trend analysis
+            # Trend Analysis
             if current_price > ma200:
-                signals.append("LONG TERM TREND: Bullish (Price > 200 MA)")
+                signals.append("TREND: Bullish (Price > 200 MA)")
             else:
-                signals.append("LONG TERM TREND: Bearish (Price < 200 MA)")
+                signals.append("TREND: Bearish (Price < 200 MA)")
             
-            if current_price > ma30:
-                signals.append("MEDIUM TERM TREND: Bullish (Price > 30 MA)")
-            else:
-                signals.append("MEDIUM TERM TREND: Bearish (Price < 30 MA)")
-            
-            # Support/Resistance analysis
+            # Support/Resistance Analysis
             if current_price < support * 1.02:
-                signals.append("SUPPORT: Price near support level - Potential buying zone")
+                signals.append("SUPPORT: Price near support - Potential buying zone")
             elif current_price > resistance * 0.98:
-                signals.append("RESISTANCE: Price near resistance level - Potential selling zone")
-            
-            # Moving Average Crossovers
-            ma5 = float(self.stock_data['MA5'].iloc[-1])
-            ma5_prev = float(self.stock_data['MA5'].iloc[-2])
-            ma20_prev = float(self.stock_data['MA20'].iloc[-2])
-            
-            if ma5 > ma20 and ma5_prev < ma20_prev:
-                signals.append("CROSSOVER: Golden Cross (5 MA crossed above 20 MA) - Bullish signal")
-            elif ma5 < ma20 and ma5_prev > ma20_prev:
-                signals.append("CROSSOVER: Death Cross (5 MA crossed below 20 MA) - Bearish signal")
+                signals.append("RESISTANCE: Price near resistance - Potential selling zone")
             
             # RSI Analysis
             if rsi > 70:
-                signals.append("RSI: Overbought condition (RSI > 70) - Consider taking profits")
+                signals.append("RSI: Overbought condition (RSI > 70)")
             elif rsi < 30:
-                signals.append("RSI: Oversold condition (RSI < 30) - Consider buying")
+                signals.append("RSI: Oversold condition (RSI < 30)")
             
             # MACD Analysis
-            macd_prev = float(self.stock_data['MACD'].iloc[-2])
-            signal_line_prev = float(self.stock_data['Signal_Line'].iloc[-2])
+            if macd > signal_line:
+                signals.append("MACD: Bullish signal (MACD > Signal Line)")
+            else:
+                signals.append("MACD: Bearish signal (MACD < Signal Line)")
             
-            if macd > signal_line and macd_prev < signal_line_prev:
-                signals.append("MACD: Bullish crossover - Consider buying")
-            elif macd < signal_line and macd_prev > signal_line_prev:
-                signals.append("MACD: Bearish crossover - Consider selling")
-            
-            # Volume analysis
-            current_volume = float(self.stock_data['Volume'].iloc[-1])
-            avg_volume = float(self.stock_data['Volume'].rolling(window=20).mean().iloc[-1])
-            
-            if current_volume > avg_volume * 1.5:
-                signals.append("VOLUME: Significantly higher than average - Strong price movement")
-            elif current_volume < avg_volume * 0.5:
-                signals.append("VOLUME: Significantly lower than average - Weak price movement")
-            
-            # Bollinger Bands analysis
-            bb_upper = float(self.stock_data['BB_upper'].iloc[-1])
-            bb_lower = float(self.stock_data['BB_lower'].iloc[-1])
-            
-            if current_price > bb_upper:
-                signals.append("BOLLINGER: Price above upper band - Potential overbought")
-            elif current_price < bb_lower:
-                signals.append("BOLLINGER: Price below lower band - Potential oversold")
-            
-            # Get previous values for crossover calculations
-            ma5_prev = float(self.stock_data['MA5'].iloc[-2])
-            ma20_prev = float(self.stock_data['MA20'].iloc[-2])
-            macd_prev = float(self.stock_data['MACD'].iloc[-2])
-            signal_line_prev = float(self.stock_data['Signal_Line'].iloc[-2])
-            
-            # Format the signals
-            signals_text = "\nTechnical Analysis Signals:\n"
-            signals_text += "\nTrend Signals:\n"
-            signals_text += "\n".join([s for s in signals if "TREND" in s])
-            
-            signals_text += "\n\nPrice Level Signals:\n"
-            signals_text += "\n".join([s for s in signals if any(x in s for x in ["SUPPORT", "RESISTANCE", "BOLLINGER"])])
-            
-            signals_text += "\n\nMomentum Signals:\n"
-            signals_text += "\n".join([s for s in signals if any(x in s for x in ["RSI", "MACD", "CROSSOVER"])])
-            
-            signals_text += "\n\nVolume Signals:\n"
-            signals_text += "\n".join([s for s in signals if "VOLUME" in s])
-            
-            return signals_text
+            return "\n".join(signals)
             
         except Exception as e:
-            return f"Error generating trading signals: {str(e)}\nTry selecting a longer date range for better signal generation."
+            return f"Error generating signals: {str(e)}"
 
     def fetch_and_predict(self, stock_name, start_date, end_date):
         """Fetch data and make predictions"""
-        if stock_name not in self.nse_stocks:
-            return "Invalid stock selection!", None, None, None, None, None, None
-        
         try:
-            # Validate dates
-            start_date = pd.to_datetime(start_date)
-            end_date = pd.to_datetime(end_date)
+            # Fetch and process data
+            status, data = self.fetch_stock_data(stock_name, start_date, end_date)
+            if "Error" in status or data is None:
+                return status, None, None, None, None, None, None
             
-            if start_date >= end_date:
-                return "Start date must be before end date!", None, None, None, None, None, None
-            
-            # Limit the maximum date range to 5 years
-            if (end_date - start_date).days > 1825:  # 5 years
-                return "Please select a date range of 5 years or less!", None, None, None, None, None, None
-            
-            # Fetch data with additional historical data for feature calculation
-            start_date_with_buffer = (start_date - pd.Timedelta(days=200)).strftime('%Y-%m-%d')
-            end_date_str = end_date.strftime('%Y-%m-%d')
-            
-            ticker = self.nse_stocks[stock_name]
-            self.selected_stock = stock_name
-            self.stock_data = yf.download(ticker, start=start_date_with_buffer, end=end_date_str)
-            
-            if self.stock_data.empty:
-                return "No data available for the selected period!", None, None, None, None, None, None
-            
-            # Calculate technical indicators
-            # Moving Averages
-            self.stock_data['MA200'] = self.stock_data['Close'].rolling(window=200, min_periods=1).mean()
-            self.stock_data['MA30'] = self.stock_data['Close'].rolling(window=30, min_periods=1).mean()
-            self.stock_data['MA20'] = self.stock_data['Close'].rolling(window=20, min_periods=1).mean()
-            self.stock_data['MA5'] = self.stock_data['Close'].rolling(window=5, min_periods=1).mean()
-            
-            # Bollinger Bands (20-day)
-            rolling_mean = self.stock_data['Close'].rolling(window=20).mean()
-            rolling_std = self.stock_data['Close'].rolling(window=20).std()
-            self.stock_data['BB_upper'] = rolling_mean + (rolling_std * 2)
-            self.stock_data['BB_middle'] = rolling_mean
-            self.stock_data['BB_lower'] = rolling_mean - (rolling_std * 2)
-            
-            # Support and Resistance levels
-            self.stock_data['Support'] = self.stock_data['Low'].rolling(window=20, min_periods=1).min()
-            self.stock_data['Resistance'] = self.stock_data['High'].rolling(window=20, min_periods=1).max()
-            
-            # Fibonacci Retracement Levels
-            high = self.stock_data['High'].rolling(window=20, min_periods=1).max()
-            low = self.stock_data['Low'].rolling(window=20, min_periods=1).min()
-            diff = high - low
-            self.stock_data['Fib_0.236'] = high - (diff * 0.236)
-            self.stock_data['Fib_0.382'] = high - (diff * 0.382)
-            self.stock_data['Fib_0.5'] = high - (diff * 0.5)
-            self.stock_data['Fib_0.618'] = high - (diff * 0.618)
-            self.stock_data['Fib_0.786'] = high - (diff * 0.786)
-            
-            # RSI
-            delta = self.stock_data['Close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            self.stock_data['RSI'] = 100 - (100 / (1 + rs))
-            
-            # MACD
-            exp1 = self.stock_data['Close'].ewm(span=12, adjust=False).mean()
-            exp2 = self.stock_data['Close'].ewm(span=26, adjust=False).mean()
-            self.stock_data['MACD'] = exp1 - exp2
-            self.stock_data['Signal_Line'] = self.stock_data['MACD'].ewm(span=9, adjust=False).mean()
-            
-            # Prepare features and target
-            features_df = self.prepare_features(self.stock_data)
-            
-            # Trim the buffer period
-            features_df = features_df[features_df.index >= start_date]
-            self.stock_data = self.stock_data[self.stock_data.index >= start_date]
-            
-            if len(features_df) < 2:
-                return "Insufficient data for analysis!", None, None, None, None, None, None
-            
-            # Prepare training data
-            X = features_df.iloc[:-1]  # All rows except last
-            y = self.stock_data['Close'].iloc[1:]  # All rows except first
-            
-            if len(X) < 30:  # Additional check for minimum required data
-                return "Insufficient data for analysis! Please select a longer date range.", None, None, None, None, None, None
-            
-            # Train model
+            # Make predictions
             try:
-                self.train_model(X, y)
-            except Exception as e:
-                return f"Error training model: {str(e)}", None, None, None, None, None, None
-            
-            # Make future predictions
-            try:
-                future_pred_df = self.predict_future(self.stock_data)
-            except Exception as e:
-                return f"Error making predictions: {str(e)}", None, None, None, None, None, None
-            
-            # Create plots
-            try:
-                fig_price = self.create_price_plot(future_pred_df)
-                fig_volume = self.create_volume_plot()
-                fig_prediction = self.create_prediction_plot(future_pred_df)
-            except Exception as e:
-                print(f"Debug - Stock Data Columns: {self.stock_data.columns}")  # Debug print
-                return f"Error creating plots: {str(e)}", None, None, None, None, None, None
-            
-            # Calculate metrics
-            try:
-                metrics = self.calculate_metrics(future_pred_df)
-            except Exception as e:
-                return f"Error calculating metrics: {str(e)}", None, None, None, None, None, None
-            
-            # Save all data files
-            try:
+                future_pred_df = self.predict_future(data)
+                
+                # Save files
                 os.makedirs('data', exist_ok=True)
                 
-                # Save raw data
                 raw_data_path = f'data/{stock_name.replace(" ", "_")}_raw_data.csv'
                 self.stock_data.to_csv(raw_data_path)
                 
-                # Save analyzed data
                 analyzed_data_path = f'data/{stock_name.replace(" ", "_")}_analyzed_data.csv'
                 self.stock_data.to_csv(analyzed_data_path)
                 
-                # Save predictions
                 predictions_path = f'data/{stock_name.replace(" ", "_")}_predictions.csv'
                 future_pred_df.to_csv(predictions_path, index=False)
                 
-                # Create ZIP file immediately after analysis
+                # Create ZIP file
                 zip_file, status_msg = self.create_and_download_zip(stock_name)
                 
                 return ("Analysis completed successfully!", 
                         self.create_technical_analysis_plots(future_pred_df),
                         self.create_volume_analysis(),
                         self.create_momentum_indicators(),
-                        metrics,
-                        zip_file,    # File path first
-                        status_msg)  # Status message second
+                        self.calculate_metrics(future_pred_df),
+                        zip_file,
+                        status_msg)
                 
             except Exception as e:
-                print(f"Error saving files: {str(e)}")
-                return f"Error saving files: {str(e)}", None, None, None, None, None, None
+                print(f"Error in prediction step: {str(e)}")
+                return f"Error in prediction: {str(e)}", None, None, None, None, None, None
             
         except Exception as e:
             print(f"Error in analysis: {str(e)}")
             return f"Error during analysis: {str(e)}", None, None, None, None, None, None
 
     def create_technical_analysis_plots(self, future_pred_df):
-        """Create comprehensive technical analysis plots"""
-        # Create subplots
+        """Create comprehensive technical analysis plots with TradingView-style layout"""
+        # Create figure with secondary y-axis
         fig = make_subplots(
-            rows=2, cols=1,
+            rows=3, cols=2,
             shared_xaxes=True,
             vertical_spacing=0.03,
-            subplot_titles=(f'{self.selected_stock} Price Analysis', 'Moving Averages'),
-            row_heights=[0.7, 0.3]
+            horizontal_spacing=0.03,
+            row_heights=[0.5, 0.25, 0.25],
+            subplot_titles=(
+                f'{self.selected_stock} Price Analysis', 'Volume Profile',
+                'Technical Indicators', 'Price Momentum',
+                'Market Depth', 'Trading Activity'
+            )
         )
-        
-        # Main candlestick chart
+
+        # Main candlestick chart with enhanced styling
         fig.add_trace(
             go.Candlestick(
                 x=self.stock_data.index,
@@ -1009,95 +691,152 @@ class StockAnalysisPipeline:
                 high=self.stock_data['High'],
                 low=self.stock_data['Low'],
                 close=self.stock_data['Close'],
-                name='Price'
+                name='OHLC',
+                increasing_line_color='#26a69a',
+                decreasing_line_color='#ef5350'
             ),
             row=1, col=1
         )
-        
-        # Add Moving Averages
+
+        # Add Moving Averages with gradient colors
         ma_colors = {
             'MA5': 'rgba(255,255,0,0.7)',
             'MA20': 'rgba(0,255,0,0.7)',
-            'MA30': 'rgba(255,165,0,0.7)',
+            'MA50': 'rgba(255,165,0,0.7)',
             'MA200': 'rgba(255,0,0,0.7)'
         }
-        
+
         for ma, color in ma_colors.items():
             fig.add_trace(
                 go.Scatter(
                     x=self.stock_data.index,
                     y=self.stock_data[ma],
                     name=ma,
-                    line=dict(color=color, width=1)
+                    line=dict(color=color, width=1),
+                    opacity=0.8
                 ),
-                row=2, col=1
+                row=1, col=1
             )
-        
-        # Add Bollinger Bands
+
+        # Add Bollinger Bands with fill
         fig.add_trace(
             go.Scatter(
                 x=self.stock_data.index,
                 y=self.stock_data['BB_upper'],
                 name='BB Upper',
-                line=dict(color='gray', dash='dash'),
-                opacity=0.3
+                line=dict(color='rgba(173,204,255,0.7)', dash='dash'),
+                fill=None
             ),
             row=1, col=1
         )
-        
+
         fig.add_trace(
             go.Scatter(
                 x=self.stock_data.index,
                 y=self.stock_data['BB_lower'],
                 name='BB Lower',
-                line=dict(color='gray', dash='dash'),
+                line=dict(color='rgba(173,204,255,0.7)', dash='dash'),
                 fill='tonexty',
-                opacity=0.3
+                fillcolor='rgba(173,204,255,0.1)'
             ),
             row=1, col=1
         )
-        
-        # Add Support and Resistance
+
+        # Volume bars with color based on price movement
+        colors = ['#26a69a' if close > open else '#ef5350'
+                  for close, open in zip(self.stock_data['Close'], self.stock_data['Open'])]
+
+        fig.add_trace(
+            go.Bar(
+                x=self.stock_data.index,
+                y=self.stock_data['Volume'],
+                name='Volume',
+                marker_color=colors,
+                opacity=0.8
+            ),
+            row=2, col=1
+        )
+
+        # RSI
         fig.add_trace(
             go.Scatter(
                 x=self.stock_data.index,
-                y=self.stock_data['Support'],
-                name='Support',
-                line=dict(color='green', dash='dot')
+                y=self.stock_data['RSI'],
+                name='RSI',
+                line=dict(color='#2962ff', width=1)
             ),
-            row=1, col=1
+            row=2, col=2
         )
-        
+
+        # Add RSI levels
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=2)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=2)
+
+        # MACD
         fig.add_trace(
             go.Scatter(
                 x=self.stock_data.index,
-                y=self.stock_data['Resistance'],
-                name='Resistance',
-                line=dict(color='red', dash='dot')
+                y=self.stock_data['MACD'],
+                name='MACD',
+                line=dict(color='#2962ff', width=1)
             ),
-            row=1, col=1
+            row=3, col=1
         )
-        
+
+        fig.add_trace(
+            go.Scatter(
+                x=self.stock_data.index,
+                y=self.stock_data['Signal_Line'],
+                name='Signal Line',
+                line=dict(color='#ff6d00', width=1)
+            ),
+            row=3, col=1
+        )
+
         # Add future predictions
         fig.add_trace(
             go.Scatter(
                 x=pd.to_datetime(future_pred_df['Date']),
                 y=future_pred_df['Predicted_Close'],
                 name='Prediction',
-                line=dict(color='purple', dash='dash')
+                line=dict(color='purple', dash='dash', width=2),
+                opacity=0.8
             ),
             row=1, col=1
         )
-        
-        # Update layout
+
+        # Update layout with TradingView-style design
         fig.update_layout(
             title_text=f"Technical Analysis for {self.selected_stock}",
+            template='plotly_dark',
+            plot_bgcolor='rgba(19,23,34,1)',
+            paper_bgcolor='rgba(19,23,34,1)',
+            font=dict(color='#e1e1e1'),
             xaxis_rangeslider_visible=False,
             height=800,
             showlegend=True,
-            template='plotly_dark'
+            legend=dict(
+                bgcolor='rgba(19,23,34,0.6)',
+                bordercolor='rgba(255,255,255,0.1)',
+                borderwidth=1
+            ),
+            margin=dict(l=50, r=50, t=85, b=50)
         )
-        
+
+        # Update axes
+        fig.update_xaxes(
+            gridcolor='rgba(255,255,255,0.1)',
+            zerolinecolor='rgba(255,255,255,0.1)',
+            rangeslider_visible=False,
+            showgrid=True
+        )
+
+        fig.update_yaxes(
+            gridcolor='rgba(255,255,255,0.1)',
+            zerolinecolor='rgba(255,255,255,0.1)',
+            showgrid=True
+        )
+
         return fig
 
     def create_volume_analysis(self):
