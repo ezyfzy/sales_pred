@@ -1,0 +1,1 @@
+this directory holds the csv file for training and testing
